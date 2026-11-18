@@ -21,7 +21,23 @@ npm install
 npm run tauri dev
 ```
 
-Install Camoufox separately to launch browser profiles. On macOS, StarPersona checks `/Applications/Camoufox.app` and `~/Applications/Camoufox.app`. If your copy is elsewhere, use **配置内核** (Configure engine) to select the app. Keep its bundle intact. Create a profile using a **direct connection** (本地直连), then click **打开** (Open). On first launch you will see eight example profiles and three example proxies. The sample proxy addresses are reserved for documentation and cannot be used to launch a browser.
+Use **Configure engine** to download and verify a macOS Camoufox release, or select an existing installation. The StarPersona package does not contain the engine. On macOS, StarPersona checks `/Applications/Camoufox.app` and `~/Applications/Camoufox.app`. If your copy is elsewhere, use **配置内核** (Configure engine) to select the app. Keep its bundle intact. Create a profile using a **direct connection** (本地直连), then click **打开** (Open). The workspace starts empty: no example profiles or proxies are seeded, and sample rows left by earlier versions are removed on launch while your own data stays.
+
+## What’s new in 0.2
+
+**Create profile → Account & startup:** open up to eight HTTP(S) pages on launch, check for duplicate platform/account aliases, or keep two profiles with the same alias from running together. Aliases do not log in to websites. **Shared bookmarks** is opt-in: after restarting profiles, new web bookmarks sync locally; existing private bookmarks are not imported. You can edit or remove a shared bookmark centrally. Optional numbered macOS Dock icons take effect on the next launch; macOS may also show the regular icon.
+
+On Apple Silicon, Camoufox 152.0.4-beta.30 was **313 MB to download / 687 MB on disk**, versus **1.30 GB / 2.55 GB** for 159.0-beta.42. Each installed version is shared by all profiles. Use a fresh profile when testing older versions.
+
+Once the matching GitHub Release and organization Cask are published, install with `brew install --cask stardreamtech/tap/starpersona` and update via System settings or `brew update && brew upgrade --cask stardreamtech/tap/starpersona`. Local ad-hoc signing only; no notarization. [Distribution and test notes (Chinese)](docs/desktop-distribution.md).
+
+## Import proxies from StarPort
+
+In the desktop app, open **代理 IP → 从 StarPort 导入代理列表**. StarPort runs its own mihomo sidecar and exposes local SOCKS5 listeners. StarPersona only reads the local service at `127.0.0.1:18765`; it neither starts nor modifies it. WorkBuddyAPI is not required. Import validates HTTPS through each candidate (four at a time), then rechecks the source mapping before saving. Failed, missing, conflicting or unapplied entries do not replace working configurations. Existing profile references and custom names are preserved. The list can be filtered by name, host, port, region, protocol and health.
+
+With an upgraded StarPort, stable installation-scoped IDs identify the same upstream configuration across renames and port changes. Older servers deduplicate only by local protocol, host and port. Public egress IP alone is not an identity. **测连通** measures an HTTPS 204 request. **测速** downloads 1 MiB through the selected proxy from Cloudflare and reports average Mbps including connection setup. A failure at one test site is not proof that all destinations are unreachable.
+
+**Local check (Apple Silicon macOS, 2026-11-18):** 40 of 40 listeners passed this HTTPS 204 sample. Importing the same measured snapshot into a throwaway workspace added 40 entries the first time and zero the second. A second live sample passed 39/40, skipped the failed listener and added zero on replay. Replaying all entries as failed left the workspace byte-for-byte unchanged. A separate 1 MiB download measured 889,957 bytes/s (7.12 Mbps) on one listener. Nothing was imported into the user’s real workspace. The updated ID algorithm found 40 distinct upstream configurations, not necessarily 40 different public IPs.
 
 ## What was tested
 
@@ -41,7 +57,7 @@ Create, edit, duplicate, search, group, favorite or archive profiles. Configure 
 
 Each profile has a persistent data directory. Duplicating a profile copies its settings, not its signed-in sessions. JSON backups cover workspace configuration only: browser databases, extension code and local engine paths are excluded. On macOS the workspace is stored at `~/Library/Application Support/app.starpersona.desktop/workspace.json`.
 
-For shared extensions, select an unpacked Firefox extension directory with a stable Gecko ID in its manifest. The configured set applies to all profiles. The code is shared; each profile keeps its own extension storage. An extension’s own cloud sync may still synchronize its settings. [Extension details](docs/extensions.md).
+The desktop **Extension Center** keeps one copy of each Firefox extension and separate extension data per profile. Add a local directory, an xpi/zip, or an addons.mozilla.org detail page. A switch loads it in every profile; you can also limit it to selected profiles. Chrome Web Store extensions cannot run on the current Camoufox kernel. [Extension details](docs/extensions.md).
 
 ## CLI, MCP and agent skill
 
@@ -52,7 +68,7 @@ npm run cli -- status
 npm run cli -- list
 ```
 
-The CLI, seven MCP tools and the [agent skill](skills/starpersona/SKILL.md) use the same desktop manager to query, create, edit, start, stop, archive and restore profiles. In the [MCP configuration example](mcp-config.example.json), replace `/absolute/path/to/StarPersona` with the absolute path to your checkout. Local control uses a Unix socket on macOS and Linux; Windows named pipes are not implemented. Page clicks, typing and script execution are not exposed by the app. [Automation design and tested protocols](docs/automation.md).
+The CLI, eleven MCP tools and the [agent skill](skills/starpersona/SKILL.md) use the same desktop manager to query, create, edit, start, stop, archive and restore profiles, and to manage the extension library. In the [MCP configuration example](mcp-config.example.json), replace `/absolute/path/to/StarPersona` with the absolute path to your checkout. Local control uses a Unix socket on macOS and Linux; Windows named pipes are not implemented. Page clicks, typing and script execution are not exposed by the app. [Automation design and tested protocols](docs/automation.md).
 
 ## Build and test
 
