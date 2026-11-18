@@ -43,7 +43,13 @@ test('local control preserves split Unicode responses and MCP handles tools and 
     env: { ...process.env, STARPERSONA_SOCKET: path },
   }));
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 7);
+  assert.deepEqual(tools.tools.map(t => t.name).sort(), [
+    'status','profiles','profile_create','profile_update','profile_start','profile_stop','profile_archive',
+    'extensions','extension_import','extension_scope','extension_remove',
+  ].map(name => `starpersona_${name}`).sort());
+  const options = {name:'启动配置测试', platform:'Portal',accountLabel:'QA',exclusiveAccount:true,startUrls:['https://example.org/']};
+  await client.callTool({name:'starpersona_profile_create',arguments:options});
+  assert.deepEqual(seen.at(-1), {method:'profile.create', params:options});
   assert.equal(tools.tools.find(tool => tool.name === 'starpersona_profiles').annotations.readOnlyHint, true);
   const result = await client.callTool({ name: 'starpersona_profiles', arguments: { query: '星相' } });
   assert.equal(result.structuredContent.result.name, '星相环境');

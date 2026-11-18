@@ -12,6 +12,10 @@ const help = `StarPersona CLI — 先打开星相桌面应用
   stop <环境ID> [更多ID...]
   archive <环境ID>
   restore <环境ID>
+  extensions
+  extension-add <目录或 xpi/zip>
+  extension-scope <扩展ID> --json '{"scope":"all"}'
+  extension-remove <扩展ID>
   mcp          启动 stdio MCP 服务
   skill        输出 Skill 路径
 所有普通命令输出 JSON；出错时退出码为 1。stop 表示请求退出，须用 status 确认完成。`;
@@ -39,6 +43,14 @@ try {
       case 'create': result = await request('profile.create', data()); break;
       case 'update': result = await request('profile.update', { ...data(), profileId: id() }); break;
       case 'archive': case 'restore': result = await request('profile.archive', { profileId: id(), archived: command === 'archive' }); break;
+      case 'extensions': result = await request('extension.list'); break;
+      case 'extension-add': {
+        if (ids.length !== 1) throw new Error('请指定一个扩展目录或安装包路径');
+        result = await request('extension.import', { path: ids[0] });
+        break;
+      }
+      case 'extension-scope': result = await request('extension.scope', { ...data(), id: id() }); break;
+      case 'extension-remove': result = await request('extension.remove', { id: id() }); break;
       case 'start': case 'stop': {
         if (!ids.length) throw new Error('至少指定一个环境 ID');
         const results = [];

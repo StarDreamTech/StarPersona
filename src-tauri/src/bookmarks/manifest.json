@@ -1,0 +1,1 @@
+{"manifest_version":2,"name":"星相 · 本机共享书签","version":"1.0.0","browser_specific_settings":{"gecko":{"id":"bookmarks@starpersona.local"}},"permissions":["bookmarks","storage","nativeMessaging"],"background":{"scripts":["sync.js"],"persistent":true}}

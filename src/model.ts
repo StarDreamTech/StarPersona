@@ -11,6 +11,16 @@ export interface Proxy {
   host: string;
   port: number;
   country: string;
+  sourceNode?: string;
+  sourceName?: string;
+  check?: {
+    at: string;
+    ok: boolean;
+    message: string;
+    lastGoodMs?: number;
+    bytesPerSecond?: number;
+    speedAt?: string;
+  };
 }
 export interface Profile {
   id: string;
@@ -28,6 +38,11 @@ export interface Profile {
   timezone: string;
   resolution: string;
   fingerprint: string;
+  platform?: string;
+  accountLabel?: string;
+  checkDuplicate?: boolean;
+  exclusiveAccount?: boolean;
+  startUrls?: string[];
 }
 export interface Workspace {
   version: 1;
@@ -66,94 +81,47 @@ export function createProfile(workspace: Workspace): Profile {
   };
 }
 export function initialWorkspace(): Workspace {
-  const workspace: Workspace = {
+  return {
     version: 1,
     settings: {
       name: "我的工作空间",
       defaultOs: "Windows",
       defaultTimezone: "Asia/Shanghai",
     },
-    groups: [
-      { id: "web3", name: "Web3 工作室", color: colors[0]! },
-      { id: "commerce", name: "跨境电商", color: colors[1]! },
-      { id: "social", name: "社媒运营", color: colors[2]! },
-    ],
-    proxies: [
-      {
-        id: "us",
-        name: "美国 · 洛杉矶",
-        protocol: "SOCKS5",
-        host: "192.0.2.10",
-        port: 1080,
-        country: "US",
-      },
-      {
-        id: "sg",
-        name: "新加坡",
-        protocol: "SOCKS5",
-        host: "198.51.100.20",
-        port: 1080,
-        country: "SG",
-      },
-      {
-        id: "jp",
-        name: "日本 · 东京",
-        protocol: "HTTP",
-        host: "203.0.113.30",
-        port: 8080,
-        country: "JP",
-      },
-    ],
+    groups: [],
+    proxies: [],
     profiles: [],
   };
-  const examples = [
-    [
-      "star-01-emily",
-      "web3",
-      "us",
-      "Windows",
-      "Web3,主账号",
-      "日常工作环境",
-      true,
-    ],
-    ["star-02-james", "web3", "us", "Windows", "Web3", "", false],
-    [
-      "star-03-sophia",
-      "commerce",
-      "sg",
-      "macOS",
-      "Amazon,主账号",
-      "美国站店铺",
-      true,
-    ],
-    ["star-04-oliver", "commerce", "jp", "Windows", "Shopify", "", false],
-    [
-      "star-05-charlotte",
-      "social",
-      "us",
-      "macOS",
-      "Instagram",
-      "品牌内容运营",
-      false,
-    ],
-    ["star-06-noah", "social", "sg", "Windows", "TikTok,测试", "", false],
-    ["star-07-amelia", "web3", "", "Linux", "测试", "", false],
-    ["star-08-liam", "", "", "Windows", "", "备用环境", false],
-  ] as const;
-  workspace.profiles = examples.map((row, index) => ({
-    ...createProfile(workspace),
-    id: `example-${index + 1}`,
-    serial: index + 1,
-    name: row[0],
-    groupId: row[1],
-    proxyId: row[2],
-    os: row[3],
-    tags: row[4] ? row[4].split(",") : [],
-    notes: row[5],
-    favorite: row[6],
-    createdAt: `2026-11-${String(10 + Math.floor(index / 2)).padStart(2, "0")}T0${(index % 5) + 1}:30:00Z`,
-  }));
-  return workspace;
+}
+const demoProxyIds = ["us", "sg", "jp"];
+const demoGroupIds = ["web3", "commerce", "social"];
+const reservedHosts = ["192.0.2.", "198.51.100.", "203.0.113."];
+export const isDemoProxy = (p: Proxy) =>
+  demoProxyIds.includes(p.id) &&
+  !p.sourceNode &&
+  reservedHosts.some((host) => p.host.startsWith(host));
+const isDemoProfile = (p: Profile) => /^example-\d+$/.test(p.id);
+/** Drops the sample rows that earlier versions seeded, keeping user data. */
+export function stripDemoData(workspace: Workspace): boolean {
+  const profiles = workspace.profiles.filter((p) => !isDemoProfile(p));
+  const usedProxies = new Set(profiles.map((p) => p.proxyId));
+  const proxies = workspace.proxies.filter(
+    (p) => !isDemoProxy(p) || usedProxies.has(p.id),
+  );
+  const usedGroups = new Set(profiles.map((p) => p.groupId));
+  const groups = workspace.groups.filter(
+    (g) => !demoGroupIds.includes(g.id) || usedGroups.has(g.id),
+  );
+  if (
+    profiles.length === workspace.profiles.length &&
+    proxies.length === workspace.proxies.length &&
+    groups.length === workspace.groups.length
+  )
+    return false;
+  workspace.profiles = profiles;
+  workspace.proxies = proxies;
+  workspace.groups = groups;
+  return true;
 }
 export function visibleProfiles(
   workspace: Workspace,
@@ -173,7 +141,7 @@ export function visibleProfiles(
         (!group || p.groupId === group || (group === "__none" && !p.groupId)) &&
         (tab !== "favorite" || p.favorite) &&
         (!search ||
-          [p.name, groupName, p.notes, proxy?.host ?? "", ...p.tags]
+          [p.name, groupName, p.notes, p.platform, p.accountLabel, proxy?.host ?? "", ...p.tags]
             .join(" ")
             .toLocaleLowerCase()
             .includes(search))
@@ -186,6 +154,38 @@ export function visibleProfiles(
           ? b.createdAt.localeCompare(a.createdAt)
           : a.serial - b.serial,
     );
+}
+export function visibleProxies(
+  workspace: Workspace,
+  query: string,
+  protocol: string,
+  status: string,
+  countryName: (code: string) => string = (code) => code,
+): Proxy[] {
+  const search = query.trim().toLocaleLowerCase();
+  return workspace.proxies.filter((p) => {
+    const text = [
+      p.name,
+      p.host,
+      String(p.port),
+      p.protocol,
+      countryName(p.country),
+      p.country,
+      p.sourceName ?? "",
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    return (
+      (!protocol || p.protocol === protocol) &&
+      (!status ||
+        (status === "ok"
+          ? p.check?.ok === true
+          : status === "fail"
+            ? Boolean(p.check) && p.check?.ok !== true
+            : !p.check)) &&
+      (!search || text.includes(search))
+    );
+  });
 }
 export function removeGroup(workspace: Workspace, id: string) {
   workspace.groups = workspace.groups.filter((g) => g.id !== id);
@@ -254,7 +254,31 @@ export function parseWorkspace(text: string): Workspace {
         p.port < 1 ||
         p.port > 65535 ||
         typeof p.country !== "string" ||
-        p.country.length > 8,
+        p.country.length > 8 ||
+        (p.sourceNode !== undefined &&
+          (typeof p.sourceNode !== "string" ||
+            !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(
+              p.sourceNode,
+            ))) ||
+        (p.sourceName !== undefined &&
+          (typeof p.sourceName !== "string" ||
+            !p.sourceName.trim() ||
+            p.sourceName.length > 80)) ||
+        (p.check !== undefined &&
+          (!p.check ||
+            typeof p.check.ok !== "boolean" ||
+            typeof p.check.at !== "string" ||
+            !p.check.at ||
+            p.check.at.length > 40 ||
+            typeof p.check.message !== "string" ||
+            p.check.message.length > 100 ||
+            (p.check.speedAt !== undefined &&
+              (typeof p.check.speedAt !== "string" ||
+                !p.check.speedAt ||
+                p.check.speedAt.length > 40)) ||
+            [p.check.lastGoodMs, p.check.bytesPerSecond].some(
+              (v) => v !== undefined && (!Number.isSafeInteger(v) || v < 0),
+            ))),
     )
   )
     throw new Error("代理配置不正确");
@@ -288,5 +312,24 @@ export function parseWorkspace(text: string): Workspace {
     throw new Error("环境数据不完整或包含失效引用");
   if (new Set(w.profiles.map((p) => p.serial)).size !== w.profiles.length)
     throw new Error("环境序号不能重复");
+  validateAccountRules(w.profiles);
   return w;
+}
+
+export function validateAccountRules(profiles: Profile[]) {
+  const keys = new Map<string, boolean>();
+  for (const p of profiles) {
+    for (const s of [p.platform, p.accountLabel]) if (s !== undefined && (typeof s !== 'string' || s.length > 100 || /[\u0000-\u001f\u007f]/.test(s))) throw Error('平台和账号备注限 100 字，不可含控制字符');
+    for (const b of [p.checkDuplicate, p.exclusiveAccount]) if (b !== undefined && typeof b !== 'boolean') throw Error('账号限制设置无效');
+    if (p.startUrls !== undefined && (!Array.isArray(p.startUrls) || p.startUrls.length > 8 || !p.startUrls.every(s => {
+      if (typeof s !== 'string' || !/^https?:\/\//i.test(s) || s.length > 2048 || /[\s\\\u0000-\u001f\u007f]/u.test(s)) return false;
+      try { const u = new URL(s); return !!u.host && !u.username && !u.password; } catch { return false; }
+    }))) throw Error('启动网址最多 8 条，仅支持不含账号密码的 HTTP(S) 地址，每条不超过 2048 字');
+    const pair = [p.platform?.trim().toLowerCase(), p.accountLabel?.trim().toLowerCase()];
+    if (pair.some(x => !x)) { if (p.checkDuplicate || p.exclusiveAccount) throw Error('启用账号限制需填写平台和账号备注'); continue; }
+    if (p.archived) continue;
+    const key = JSON.stringify(pair);
+    if (keys.has(key) && (keys.get(key) || p.checkDuplicate)) throw Error('同一平台已存在相同账号备注，请修改或关闭查重');
+    keys.set(key, !!p.checkDuplicate);
+  }
 }

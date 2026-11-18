@@ -28,4 +28,6 @@ node scripts/starpersona.mjs restore <环境ID>
 
 MCP / CLI 与界面共用同一个 Rust 管理器，操作结果会刷新到界面。发生“工作空间已被其他操作更新”时，重新查询并根据最新数据重试，不直接覆写文件。
 
+扩展中心与窗口管理共用本机服务。`starpersona_extensions` 查询；`starpersona_extension_import` 导入目录或 xpi/zip；`starpersona_extension_scope` 设为 `all`（所有窗口）、`profiles`（配 `profileIds`）或 `off`。扩展代码只保留一份，各窗口的插件数据仍分开。已打开的窗口要重新打开后才加载新的范围。不要把 Chrome 商店扩展当作可加载项：当前内核是 Camoufox。移除扩展不会删除用户原来的目录，也不会清空窗口里已有的插件数据。
+
 本接口只操作星相管理器，不提供网页快照、点击、填表、脚本执行或 CDP 端口。Camoufox 是 Firefox 系内核；网页自动化需独立的 Playwright / Juggler 适配，不能直接把 Chrome DevTools MCP 接到这些环境。详情见项目 `docs/automation.md`。

@@ -204,14 +204,36 @@ fn real_camoufox_isolates_and_persists_shared_addon_data() {
         for page in &pages {
             let fingerprint = &page["fingerprint"];
             assert_eq!(page["httpUserAgent"], page["ua"]);
-            for key in ["userAgent", "platform", "language", "languages", "timezone", "hardwareConcurrency"] {
-                assert_eq!(fingerprint["main"][key], fingerprint["iframe"][key], "iframe mismatch for {key}");
-                assert_eq!(fingerprint["main"][key], fingerprint["worker"][key], "worker mismatch for {key}");
+            for key in [
+                "userAgent",
+                "platform",
+                "language",
+                "languages",
+                "timezone",
+                "hardwareConcurrency",
+            ] {
+                assert_eq!(
+                    fingerprint["main"][key], fingerprint["iframe"][key],
+                    "iframe mismatch for {key}"
+                );
+                assert_eq!(
+                    fingerprint["main"][key], fingerprint["worker"][key],
+                    "worker mismatch for {key}"
+                );
             }
             assert_eq!(fingerprint["main"]["webdriver"], false);
-            assert!(fingerprint["canvas"]["dataUrl"].is_string(), "canvas probe failed");
-            assert_eq!(fingerprint["canvas"]["dataUrl"], fingerprint["canvas"]["repeatedDataUrl"]);
-            assert_eq!(fingerprint["canvas"]["dataUrl"], fingerprint["canvas"]["freshCanvas"]);
+            assert!(
+                fingerprint["canvas"]["dataUrl"].is_string(),
+                "canvas probe failed"
+            );
+            assert_eq!(
+                fingerprint["canvas"]["dataUrl"],
+                fingerprint["canvas"]["repeatedDataUrl"]
+            );
+            assert_eq!(
+                fingerprint["canvas"]["dataUrl"],
+                fingerprint["canvas"]["freshCanvas"]
+            );
         }
         assert!(manager
             .launch(root.path(), &workspace, "test-a", true, Some(&origin))
@@ -283,4 +305,121 @@ fn real_camoufox_isolates_and_persists_shared_addon_data() {
         std::panic::resume_unwind(error);
     }
     assert!(manager.instances.is_empty(), "test processes did not close");
+}
+
+#[test]
+fn account_rules_survive_restore_and_reject_bad_start_urls() {
+    let mut w = crate::tests::empty_workspace();
+    let mut a = profile();
+    a.account_label = " QA ".into();
+    a.platform = "Portal".into();
+    a.check_duplicate = true;
+    let mut b = profile();
+    b.id = "test-b".into();
+    b.serial = 2;
+    b.platform = "portal".into();
+    b.account_label = "qa".into();
+    b.archived = true;
+    w.profiles = vec![a, b];
+    assert!(crate::validate(&w).is_ok());
+    w.profiles[1].archived = false;
+    assert!(crate::validate(&w).unwrap_err().contains("同一平台"));
+    w.profiles.reverse();
+    assert!(crate::validate(&w).is_err());
+    w.profiles.truncate(1);
+    for url in [
+        "javascript:alert(1)",
+        "https://one:two@example.org/",
+        "-P",
+        "file:///a",
+    ] {
+        w.profiles[0].start_urls = vec![url.into()];
+        assert!(crate::validate(&w).is_err());
+    }
+}
+
+#[test]
+#[ignore = "starts a temporary Camoufox; opt in to headed Dock observation with STARPERSONA_TEST_DOCK=1"]
+fn real_configured_pages_and_account_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let headed = std::env::var_os("STARPERSONA_TEST_DOCK").is_some();
+    let mut w = crate::tests::empty_workspace();
+    if headed {
+        fs::write(root.path().join("numbered-dock"), []).unwrap();
+    }
+    let mut a = profile();
+    a.serial = 71;
+    a.platform = "Portal".into();
+    a.account_label = "QA".into();
+    a.exclusive_account = true;
+    a.start_urls = ["/one", "/two"].map(|p| format!("{base}{p}")).to_vec();
+    let mut b = profile();
+    b.id = "test-b".into();
+    b.serial = 72;
+    b.platform = "portal".into();
+    b.account_label = "qa".into();
+    w.profiles = vec![a, b];
+    let mut m = BrowserManager::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        m.launch(root.path(), &w, "test-a", !headed, None).unwrap();
+        assert!(m
+            .launch(root.path(), &w, "test-b", !headed, None)
+            .unwrap_err()
+            .contains("同一平台"));
+        let mut seen = std::collections::HashSet::new();
+        let until = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < until && seen.len() < 2 {
+            if let Ok((mut conn, _)) = listener.accept() {
+                conn.set_nonblocking(false).unwrap();
+                conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut line = String::new();
+                let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(&conn), &mut line);
+                eprintln!("QA HTTP {}", line.trim_end());
+                if let Some(path) = line
+                    .split_whitespace()
+                    .nth(1)
+                    .filter(|p| ["/one", "/two"].contains(p))
+                {
+                    seen.insert(path.to_owned());
+                }
+                let _=conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<title>StarPersona QA 71</title>OK");
+            } else {
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+        assert_eq!(seen.len(), 2, "only saw {seen:?}");
+        eprintln!("PASS two configured startup pages and exclusive account lock");
+        if headed {
+            w.profiles[1].account_label = "other".into();
+            m.launch(root.path(), &w, "test-b", false, None).unwrap();
+            thread::sleep(Duration::from_secs(3));
+            #[cfg(target_os = "macos")]
+            for (id, i) in &mut m.instances {
+                let tile = i.tile.as_mut().unwrap();
+                assert!(tile.try_wait().unwrap().is_none(), "Dock helper exited");
+                eprintln!("{id} browser={} tile={}", i.child.id(), tile.id());
+            }
+            thread::sleep(Duration::from_secs(
+                std::env::var("STARPERSONA_DOCK_OBSERVE_SECS")
+                    .ok()
+                    .and_then(|x| x.parse().ok())
+                    .unwrap_or(5),
+            ));
+        }
+    }));
+    for (_, i) in &mut m.instances {
+        let _ = i.child.kill();
+        let _ = i.child.wait();
+        #[cfg(target_os = "macos")]
+        if let Some(t) = i.tile.as_mut() {
+            let _ = t.kill();
+            let _ = t.wait();
+        }
+    }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e)
+    }
 }

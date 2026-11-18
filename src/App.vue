@@ -28,6 +28,7 @@ import {
   Folder,
   FolderInput,
   FolderOpen,
+  Github,
   Globe2,
   Grid2X2,
   HardDrive,
@@ -37,6 +38,7 @@ import {
   LoaderCircle,
   Monitor,
   Plus,
+  Puzzle,
   RefreshCw,
   Search,
   Settings2,
@@ -58,6 +60,7 @@ import {
   removeProxy,
   uid,
   visibleProfiles,
+  visibleProxies,
   type Group,
   type Profile,
   type Proxy,
@@ -73,10 +76,18 @@ import {
   storageError,
   workspace,
 } from "./workspace";
+import KernelVersions from "./KernelVersions.vue";
+import Bookmarks from "./Bookmarks.vue";
+import { BookMarked } from "lucide-vue-next";
+import ProxyNetwork from "./ProxyNetwork.vue";
+import ExtensionCenter from "./ExtensionCenter.vue";
+import { refreshExtensions } from "./extensions";
+import { endpoint, health } from "./starport";
+const proxyNet = ref<InstanceType<typeof ProxyNetwork> | null>(null);
 import { browser, refreshBrowser, saveBrowserSettings, toggleBrowserProcess } from "./browser";
 
 type Page =
-  "profiles" | "overview" | "groups" | "proxies" | "settings" | "archived";
+  "profiles" | "overview" | "groups" | "proxies" | "extensions" | "bookmarks" | "settings" | "archived";
 type Modal =
   | ""
   | "profile"
@@ -91,6 +102,9 @@ const page = ref<Page>("profiles");
 const modal = ref<Modal>("");
 const query = ref("");
 const groupFilter = ref("");
+const proxyQuery = ref("");
+const proxyProtocol = ref("");
+const proxyStatus = ref("");
 const tab = ref("all");
 const sort = ref("serial");
 const pageSize = ref(10);
@@ -114,6 +128,7 @@ const proxyDraft = ref<Proxy>({
   country: "US",
 });
 const tagsInput = ref("");
+const startPagesInput = ref("");
 const editId = ref("");
 const formError = ref("");
 const toast = ref("");
@@ -124,6 +139,8 @@ const importInput = ref<HTMLInputElement | null>(null);
 const restoreDraft = ref<Workspace | null>(null);
 const settingsDraft = ref({ ...workspace.value.settings });
 const kernelDraft = ref({ executable: "", addons: [] as string[] });
+const updating=ref(false);
+async function upgrade(){if(updating.value)return;updating.value=true;try{const {invoke}=await import("@tauri-apps/api/core");notify(await invoke<string>("brew_upgrade"));}catch(e){notify(String(e),"info")}finally{updating.value=false}}
 const browserBusy = ref<string[]>([]);
 let browserTimer: ReturnType<typeof setInterval>;
 let unlistenBrowser: (() => void) | undefined;
@@ -160,15 +177,10 @@ async function chooseKernel() {
   const path = await open({ title: "选择 Camoufox 应用或可执行文件", multiple: false });
   if (path) kernelDraft.value.executable = path;
 }
-async function chooseAddon() {
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const path = await open({ title: "选择已解压的 Firefox 插件目录", directory: true, multiple: false });
-  if (path && !kernelDraft.value.addons.includes(path)) kernelDraft.value.addons.push(path);
-}
 async function saveKernel() {
   try {
     await saveBrowserSettings({ ...kernelDraft.value, addons: [...kernelDraft.value.addons] });
-    closeModal(); notify("内核与共享插件配置已保存，下次启动生效");
+    closeModal(); notify("内核路径已保存");
   } catch (error) { formError.value = String(error); }
 }
 const activeProfiles = computed(() =>
@@ -180,8 +192,19 @@ const archivedProfiles = computed(() =>
 const favoriteCount = computed(
   () => activeProfiles.value.filter((p) => p.favorite).length,
 );
-const examples = computed(() =>
-  workspace.value.profiles.some((p) => p.id.startsWith("example-")),
+const proxyRows = computed(() =>
+  visibleProxies(
+    workspace.value,
+    proxyQuery.value,
+    proxyProtocol.value,
+    proxyStatus.value,
+    (code) => countryNames[code] ?? code,
+  ),
+);
+const proxyFiltered = computed(
+  () =>
+    proxyRows.value.length !== workspace.value.proxies.length ||
+    Boolean(proxyQuery.value || proxyProtocol.value || proxyStatus.value),
 );
 const filtered = computed(() =>
   visibleProfiles(
@@ -211,6 +234,8 @@ const titles: Record<Page, string> = {
   overview: "工作台",
   groups: "分组管理",
   proxies: "代理 IP",
+  extensions: "扩展中心",
+  bookmarks: "共享书签",
   settings: "系统设置",
   archived: "回收站",
 };
@@ -250,6 +275,15 @@ const notify = (message: string, kind: "success" | "info" = "success") => {
     toast.value = "";
   }, 3600);
 };
+async function openGithub() {
+  if (!desktop) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_github");
+  } catch (cause) {
+    notify(String(cause), "info");
+  }
+}
 function navigate(target: Page) {
   page.value = target;
   selected.value = [];
@@ -290,6 +324,7 @@ function editProfile(profile?: Profile) {
     : createProfile(workspace.value);
   if (!profile && groupFilter.value && groupFilter.value !== "__none")
     draft.value!.groupId = groupFilter.value;
+  startPagesInput.value = (draft.value!.startUrls ?? []).join("\n");
   tagsInput.value = draft.value!.tags.join(", ");
   profileTab.value = "basic";
   openModal("profile");
@@ -302,6 +337,8 @@ async function saveProfile() {
   const profile = {
     ...draft.value,
     name: draft.value.name.trim(),
+    platform: draft.value.platform?.trim() || '', accountLabel: draft.value.accountLabel?.trim() || '',
+    startUrls: startPagesInput.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
     tags: [
       ...new Set(
         tagsInput.value
@@ -343,6 +380,7 @@ async function duplicateProfile(profile: Profile) {
         ...{
           id: uid(),
           serial: createProfile(w).serial,
+          accountLabel: "", checkDuplicate: false, exclusiveAccount: false,
           name: `${profile.name.slice(0, 75)} 副本`,
           createdAt: new Date().toISOString(),
           fingerprint: uid().replaceAll("-", "").slice(0, 16),
@@ -352,7 +390,7 @@ async function duplicateProfile(profile: Profile) {
       w.profiles.push(copy);
     })
   )
-    notify("已复制环境配置，并生成新的指纹标识");
+    notify("已复制环境，副本不沿用原账号备注和限制");
   menu.value = "";
 }
 async function favorite(profile: Profile) {
@@ -437,6 +475,11 @@ async function saveGroup() {
     notify("分组已保存");
   } else formError.value = storageError.value;
 }
+function resetProxyFilters() {
+  proxyQuery.value = "";
+  proxyProtocol.value = "";
+  proxyStatus.value = "";
+}
 function editProxy(proxy?: Proxy) {
   editId.value = proxy?.id ?? "";
   proxyDraft.value = proxy
@@ -471,12 +514,14 @@ async function saveProxy() {
   if (
     await commit((w) => {
       const index = w.proxies.findIndex((p) => p.id === proxy.id);
+      if(w.proxies.some(p=>p.id!==proxy.id && endpoint(p)===endpoint(proxy))) throw new Error("相同协议、主机和端口的代理已存在");
+      if(index>=0 && endpoint(w.proxies[index]!)!==endpoint(proxy)){delete proxy.sourceNode;delete proxy.sourceName;delete proxy.check}
       if (index >= 0) w.proxies[index] = proxy;
       else w.proxies.push(proxy);
     })
   ) {
     closeModal();
-    notify("代理已保存，环境下次启动时应用；连通性尚未检测");
+    notify("代理已保存，环境下次启动时应用");
   } else formError.value = storageError.value;
 }
 async function deleteEntity() {
@@ -653,6 +698,7 @@ watch(pageCount, (count) => {
 onMounted(async () => {
   await loadWorkspace();
   await pollBrowser();
+  void refreshExtensions().catch(() => undefined);
   browserTimer = setInterval(pollBrowser, 1500);
   if (desktop) {
     const { listen } = await import("@tauri-apps/api/event");
@@ -728,6 +774,14 @@ onBeforeUnmount(() => {
           <Globe2 :size="19" /><span>代理 IP</span>
         </button>
         <button
+          :class="['nav-item', { active: page === 'extensions' }]"
+          aria-label="扩展中心"
+          @click="navigate('extensions')"
+        >
+          <Puzzle :size="19" /><span>扩展中心</span>
+        </button>
+        <button :class="['nav-item', {active:page==='bookmarks'}]" @click="navigate('bookmarks')"><BookMarked :size="19"/><span>共享书签</span></button>
+        <button
           :class="['nav-item', { active: page === 'archived' }]"
           aria-label="回收站"
           @click="navigate('archived')"
@@ -780,7 +834,7 @@ onBeforeUnmount(() => {
           ><ExternalLink class="nav-end" :size="13" />
         </button>
         <div class="sidebar-footer">
-          <span>StarPersona <small>v0.1.0</small></span
+          <span>StarPersona <small>v0.2.0</small></span
           ><span class="footer-dot">本地版</span>
         </div>
       </div>
@@ -813,6 +867,13 @@ onBeforeUnmount(() => {
           ><span class="topbar-separator"></span
           ><button
             class="icon-button"
+            title="GitHub"
+            aria-label="打开 GitHub 仓库"
+            @click="openGithub"
+          >
+            <Github :size="18" /></button
+          ><button
+            class="icon-button"
             title="使用帮助"
             aria-label="使用帮助"
             @click="openModal('help')"
@@ -834,7 +895,7 @@ onBeforeUnmount(() => {
           <div>
             <div class="eyebrow">
               WORKSPACE <ChevronRight :size="11" />
-              {{ page === "archived" ? "回收站" : "环境管理" }}
+              {{ page === "archived" ? "回收站" : page === "extensions" ? "扩展" : "环境管理" }}
             </div>
             <h1>
               {{ titles[page]
@@ -850,7 +911,10 @@ onBeforeUnmount(() => {
                     ? "用分组整理不同业务，让每个环境各就其位。"
                     : page === "proxies"
                       ? "集中管理代理配置，为不同环境分配独立的网络。"
-                      : page === "archived"
+                      : page === "bookmarks" ? "统一编辑本机书签，与启用同步的环境保持一致。"
+                      : page === "extensions"
+                        ? "一份扩展代码，按窗口决定是否加载。"
+                        : page === "archived"
                         ? "已移除的环境配置保留在这里，你可以随时恢复。"
                         : page === "overview"
                           ? "一览你的工作空间，从一个独立环境开始。"
@@ -1236,7 +1300,7 @@ onBeforeUnmount(() => {
                           >{{
                             countryNames[proxyFor(profile.proxyId)!.country] ||
                             proxyFor(profile.proxyId)!.country
-                          }}<span class="proxy-unchecked">· 未检测</span></small
+                          }}<span class="proxy-unchecked">· {{ health(proxyFor(profile.proxyId)!) }}</span></small
                         >
                       </div>
                       <div v-else class="direct-connection">
@@ -1511,9 +1575,7 @@ onBeforeUnmount(() => {
           <div class="page-footnote">
             <span
               ><ShieldCheck :size="13" />本地存储 · 你的工作空间，由你掌控</span
-            ><button v-if="examples" @click="openModal('help')">
-              <Info :size="12" />当前包含示例配置，代理 IP 为文档示例地址</button
-            ><span v-else>STARPERSONA WORKSPACE</span>
+            ><span>STARPERSONA WORKSPACE</span>
           </div>
           <div v-if="page === 'profiles'" class="workspace-note">
             <div class="note-illustration">
@@ -1700,20 +1762,59 @@ onBeforeUnmount(() => {
         </template>
 
         <template v-else-if="page === 'proxies'">
-          <div v-if="examples" class="info-note proxy-notice">
-            <Info :size="17" />示例代理使用 RFC 5737
-            文档地址，不能用于连接。请添加你自己的代理配置。
-          </div>
+          <ProxyNetwork ref="proxyNet" />
           <section class="simple-panel proxies-panel">
-            <div class="section-heading">
+            <div class="section-heading proxy-heading">
               <h2>
                 代理配置<span class="small-count">{{
                   workspace.proxies.length
                 }}</span>
               </h2>
-              <span class="muted-text">支持 SOCKS5 / HTTP · 无认证代理</span>
+              <div class="proxy-filters">
+                <div class="search-box proxy-search">
+                  <Search :size="16" /><input
+                    v-model="proxyQuery"
+                    aria-label="搜索代理"
+                    placeholder="搜索名称、主机、端口或地区…"
+                  /><button
+                    v-if="proxyQuery"
+                    class="icon-button"
+                    aria-label="清除搜索"
+                    @click="proxyQuery = ''"
+                  >
+                    <X :size="14" />
+                  </button>
+                </div>
+                <div class="select-wrap proxy-select">
+                  <select v-model="proxyProtocol" aria-label="按协议筛选">
+                    <option value="">全部协议</option>
+                    <option value="SOCKS5">SOCKS5</option>
+                    <option value="HTTP">HTTP</option></select
+                  ><ChevronDown :size="13" />
+                </div>
+                <div class="select-wrap proxy-select">
+                  <select v-model="proxyStatus" aria-label="按状态筛选">
+                    <option value="">全部状态</option>
+                    <option value="ok">可用</option>
+                    <option value="fail">失败</option>
+                    <option value="unknown">未检测</option></select
+                  ><ChevronDown :size="13" />
+                </div>
+                <button
+                  v-if="proxyFiltered"
+                  class="text-button proxy-filter-clear"
+                  @click="resetProxyFilters"
+                >
+                  清除筛选
+                </button>
+              </div>
+              <span class="muted-text">{{
+                proxyFiltered
+                  ? `筛选后 ${proxyRows.length} / ${workspace.proxies.length} 条`
+                  : "支持 SOCKS5 / HTTP · 无认证代理"
+              }}</span>
             </div>
-            <div class="table-scroll">
+            <div v-if="proxyRows.length" class="table-scroll">
               <table class="proxy-table">
                 <thead>
                   <tr>
@@ -1727,7 +1828,7 @@ onBeforeUnmount(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="proxy in workspace.proxies" :key="proxy.id">
+                  <tr v-for="proxy in proxyRows" :key="proxy.id">
                     <td>
                       <span class="proxy-name"
                         ><span class="proxy-icon"><Globe2 :size="18" /></span
@@ -1740,7 +1841,7 @@ onBeforeUnmount(() => {
                     <td class="mono-text">{{ proxy.host }}:{{ proxy.port }}</td>
                     <td>
                       {{ countryFlag(proxy.country) }}
-                      {{ countryNames[proxy.country] || proxy.country }}
+                      {{ countryNames[proxy.country] || proxy.country || "未知" }}
                     </td>
                     <td>
                       {{
@@ -1750,11 +1851,14 @@ onBeforeUnmount(() => {
                       个环境
                     </td>
                     <td>
-                      <span class="neutral-status"><i></i>未检测</span>
+                      <span class="proxy-health" :class="{good:proxy.check?.ok,bad:proxy.check&&!proxy.check.ok}" :title="proxy.check?.at">{{ health(proxy) }}</span>
+                      <small v-if="proxy.check?.bytesPerSecond!=null" class="proxy-speed" :title="`上次成功测速：${proxy.check.speedAt}`">{{ (proxy.check.bytesPerSecond*8/1e6).toFixed(2) }} Mbps</small>
                     </td>
                     <td>
                       <div class="row-actions">
-                        <button class="text-button" @click="editProxy(proxy)">
+                        <button class="text-button" :disabled="!desktop||!ready||proxyNet?.busy" @click="proxyNet?.test(proxy,false)">测连通</button>
+                        <button class="text-button" title="下载 1 MiB，含建连时间" :disabled="!desktop||!ready||proxyNet?.busy" @click="proxyNet?.test(proxy,true)">测速</button>
+                        <button class="text-button" :disabled="proxyNet?.busy" @click="editProxy(proxy)">
                           编辑</button
                         ><button
                           class="icon-button"
@@ -1772,16 +1876,36 @@ onBeforeUnmount(() => {
                 </tbody>
               </table>
             </div>
-            <div v-if="!workspace.proxies.length" class="empty-state">
+            <div v-if="!proxyRows.length" class="empty-state">
               <div class="empty-icon"><Globe2 :size="30" /></div>
-              <h3>添加你的第一个代理</h3>
-              <p>保存网络配置后，可在创建环境时选择。</p>
-              <button class="button primary" @click="editProxy()">
-                <Plus :size="16" />添加代理
-              </button>
+              <template v-if="workspace.proxies.length">
+                <h3>没有符合条件的代理</h3>
+                <p>换个关键词，或清除协议和状态筛选后再看。</p>
+                <button class="button secondary" @click="resetProxyFilters">
+                  清除筛选
+                </button>
+              </template>
+              <template v-else>
+                <h3>添加你的第一个代理</h3>
+                <p>
+                  保存网络配置后，可在创建环境时选择。也可以从 StarPort
+                  导入本机代理端口。
+                </p>
+                <button class="button primary" @click="editProxy()">
+                  <Plus :size="16" />添加代理
+                </button>
+              </template>
             </div>
           </section>
         </template>
+
+        <Bookmarks v-else-if="page === 'bookmarks'" />
+        <ExtensionCenter
+          v-else-if="page === 'extensions'"
+          :profiles="activeProfiles.map((profile) => ({ id: profile.id, name: profile.name, serial: profile.serial }))"
+          :running="browser.instances.length > 0"
+          @notify="(message, kind) => notify(message, kind)"
+        />
 
         <template v-else-if="page === 'settings'">
           <div class="settings-layout">
@@ -1888,14 +2012,15 @@ onBeforeUnmount(() => {
                 {{ browser.path ? `Camoufox ${browser.version ?? ""} · ${browser.instances.length} 个环境运行中` : "选择本机已下载的 Camoufox，每个环境使用独立数据目录。" }}
               </p>
               <button class="text-button" @click="openModal('kernel')">
-                配置内核与共享插件<ArrowRight :size="14" />
+                配置内核<ArrowRight :size="14" />
               </button>
             </section>
             <section class="about-card">
               <span class="brand-mark"><Sparkles :size="26" /></span>
               <h3>星相 StarPersona</h3>
               <p>独立的身份，有序的工作空间。</p>
-              <span>v0.1.0 Beta · Tauri 2 + Rust + Vue 3</span
+              <button v-if="desktop" class="button secondary" :disabled="updating||!!browser.instances.length" @click="upgrade">{{updating?'Homebrew 更新中…':'通过 Homebrew 检查并更新'}}</button>
+              <span>v0.2.0 Beta · Tauri 2 + Rust + Vue 3</span
               ><small>开源 · 本地优先 · MIT License</small>
             </section>
           </div>
@@ -1954,7 +2079,7 @@ onBeforeUnmount(() => {
               :class="{ active: profileTab === 'basic' }"
               @click="profileTab = 'basic'"
             >
-              <Monitor :size="16" />基本配置</button
+              <Monitor :size="16" />基本配置</button><button :class="{active: profileTab === 'account'}" @click="profileTab = 'account'">账号与启动</button
             ><button
               :class="{ active: profileTab === 'fingerprint' }"
               @click="profileTab = 'fingerprint'"
@@ -2025,10 +2150,19 @@ onBeforeUnmount(() => {
                 <div class="field-note">
                   <ShieldCheck :size="17" />
                   <p>
-                    每个环境启动时应用自己的代理。示例地址无法联网，请改为真实代理或本地直连。
+                    每个环境启动时应用自己的代理。未选择时使用本机网络直连。
                   </p>
-                </div></template
-              ><template v-else
+                </div></template>
+              <template v-else-if="profileTab === 'account'">
+                <div class="form-section-title"><span>01</span>账号标记</div>
+                <div class="form-row"><label class="form-field">平台<input v-model="draft.platform" maxlength="100" placeholder="例如：公司门户" /></label>
+                <label class="form-field">账号备注<input v-model="draft.accountLabel" maxlength="100" placeholder="例如：设计组，只填别名" /></label></div>
+                <p class="settings-hint">仅供本地辨认，不会自动登录。不要填写密码或 2FA 密钥。</p>
+                <label><input v-model="draft.checkDuplicate" type="checkbox" /> 保存时检查重复账号</label>
+                <label><input v-model="draft.exclusiveAccount" type="checkbox" /> 同一平台和账号只允许打开一个环境</label>
+                <div class="form-section-title"><span>02</span>启动页</div>
+                <label class="form-field">打开指定网址<textarea v-model="startPagesInput" rows="5" placeholder="https://example.org/" /><small>每行一个 HTTP(S) 网址，最多 8 个。留空使用星相启动页。请勿填写带密码或访问令牌的链接。</small></label>
+              </template><template v-else
                 ><div class="fingerprint-banner">
                   <span><Fingerprint :size="28" :stroke-width="1.3" /></span>
                   <div>
@@ -2201,6 +2335,7 @@ onBeforeUnmount(() => {
                   </select></label
                 ><label class="form-field"
                   >国家 / 地区<select v-model="proxyDraft.country">
+                    <option value="">未知</option>
                     <option
                       v-for="(name, code) in countryNames"
                       :key="code"
@@ -2230,7 +2365,7 @@ onBeforeUnmount(() => {
               <div class="field-note">
                 <Info :size="16" />
                 <p>
-                  保存配置不会发起网络连接。环境启动时应用代理，连通性检测尚未提供。
+                  保存不会联网。回到代理列表可单独测连通或测速，环境下次启动时应用代理。
                 </p>
               </div>
               <p v-if="formError" class="form-error" role="alert">
@@ -2262,10 +2397,9 @@ onBeforeUnmount(() => {
                 <div class="input-with-button"><input v-model="kernelDraft.executable" placeholder="留空自动检测，或输入 Camoufox.app 路径" /><button type="button" aria-label="选择 Camoufox" @click="chooseKernel"><FolderOpen :size="17" /></button></div>
                 <small v-if="browser.path">已检测：{{ browser.path }} · {{ browser.version }}</small>
               </label>
-              <div class="kernel-addons-heading"><strong>共享插件</strong><button class="text-button" @click="chooseAddon"><Plus :size="14" />添加目录</button></div>
-              <div v-for="(path, index) in kernelDraft.addons" :key="path" class="kernel-addon"><span :title="path">{{ path }}</span><button class="icon-button" :aria-label="`移除插件 ${index + 1}`" @click="kernelDraft.addons.splice(index, 1)"><X :size="15" /></button></div>
-              <p class="kernel-explanation">选择已解压、包含固定 Firefox 扩展 ID 的插件目录。所有环境读取同一份代码，数据留在各自环境；修改前请先关闭运行中的浏览器。</p>
-              <p class="kernel-explanation">已接入操作系统标识、语言、时区、屏幕尺寸和代理。完整设备指纹与代理连通性检测尚未验收。</p>
+              <KernelVersions @pick="path => { kernelDraft.executable=path }" />
+              <p class="kernel-explanation">扩展改在「扩展中心」管理：代码只存一份，可以加载到所有窗口，或只指定部分窗口。这里只保存 Camoufox 的位置。</p>
+              <p class="kernel-explanation">已接入操作系统标识、语言、时区、屏幕尺寸和代理。支持在代理页手动检测连通性，完整设备指纹尚未验收。</p>
               <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
               <footer class="dialog-footer"><button class="button secondary" @click="closeModal">取消</button><button class="button primary" @click="saveKernel">保存设置</button></footer>
             </template>
@@ -2308,7 +2442,7 @@ onBeforeUnmount(() => {
             <div class="help-notice">
               <Info :size="17" />
               <p>
-                已支持本地 Camoufox 启动、关闭与独立数据目录。示例代理无法联网，请改为直连或真实代理。基础参数已接入，完整设备指纹与代理连通性检测尚未验收。
+                已支持本地 Camoufox 启动、关闭与独立数据目录。扩展在「扩展中心」添加，代理可在「代理 IP」页检测连通和测速。基础参数已接入，完整设备指纹尚未验收。
               </p>
             </div>
             <footer class="dialog-footer">

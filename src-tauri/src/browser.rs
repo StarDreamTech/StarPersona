@@ -41,6 +41,8 @@ struct Instance {
     signature: String,
     stopping: bool,
     log: PathBuf,
+    #[cfg(target_os = "macos")]
+    tile: Option<Child>,
 }
 
 #[derive(Default)]
@@ -98,7 +100,7 @@ fn resources(executable: &Path) -> PathBuf {
     }
 }
 
-fn version(executable: &Path) -> Option<String> {
+pub(super) fn version(executable: &Path) -> Option<String> {
     fs::read_to_string(resources(executable).join("application.ini"))
         .ok()?
         .lines()
@@ -152,7 +154,14 @@ fn signature(workspace: &Workspace, profile: &Profile) -> Result<String, String>
         &profile.timezone,
         &profile.resolution,
         &profile.fingerprint,
-        workspace.proxies.iter().find(|p| p.id == profile.proxy_id),
+        profile.account_key(),
+        profile.exclusive_account,
+        &profile.start_urls,
+        workspace
+            .proxies
+            .iter()
+            .find(|p| p.id == profile.proxy_id)
+            .map(|p| (&p.id, &p.protocol, &p.host, p.port)),
     ))
     .map_err(|e| e.to_string())
 }
@@ -298,6 +307,15 @@ impl BrowserManager {
     fn reap(&mut self) -> Result<(), String> {
         let mut ended = Vec::new();
         for (id, instance) in &mut self.instances {
+            #[cfg(target_os = "macos")]
+            if let Some(t) = instance.tile.as_mut() {
+                if let Some(status) = t.try_wait().map_err(|e| e.to_string())? {
+                    if !status.success() && !instance.stopping {
+                        self.errors.insert(id.clone(),"Dock 编号不可用。浏览器仍在运行；可在内核设置关闭编号，重开恢复原生图标。".into());
+                    }
+                    instance.tile = None;
+                }
+            }
             if let Some(status) = instance.child.try_wait().map_err(|e| e.to_string())? {
                 if !status.success() && !instance.stopping {
                     self.errors.insert(
@@ -309,6 +327,13 @@ impl BrowserManager {
             }
         }
         for id in ended {
+            #[cfg(target_os = "macos")]
+            if let Some(tile) = self.instances.get_mut(&id).and_then(|i| i.tile.take()) {
+                std::thread::spawn(move || {
+                    let mut tile = tile;
+                    let _ = tile.wait();
+                });
+            }
             self.instances.remove(&id);
         }
         Ok(())
@@ -323,7 +348,7 @@ impl BrowserManager {
                 .find(|p| &p.id == id && !p.archived)
                 .ok_or("请先关闭运行中的环境，再归档或替换配置")?;
             if signature(workspace, profile)? != instance.signature {
-                return Err("请先关闭环境，再修改它的代理和指纹配置".into());
+                return Err("请先关闭环境，再修改它的启动配置".into());
             }
         }
         Ok(())
@@ -359,6 +384,9 @@ impl BrowserManager {
         start_url: Option<&str>,
     ) -> Result<(), String> {
         self.reap()?;
+        if crate::distribution::busy() {
+            return Err("星相正在更新，请稍后再启动环境".into());
+        }
         if self.instances.contains_key(id) {
             return Err("该环境已经运行，请勿重复打开".into());
         }
@@ -367,9 +395,34 @@ impl BrowserManager {
             .iter()
             .find(|p| p.id == id && !p.archived)
             .ok_or("找不到可启动的环境")?;
+        profile.validate_options()?;
+        if let Some(key) = profile.account_key() {
+            if workspace.profiles.iter().any(|p| {
+                self.instances.contains_key(&p.id)
+                    && (p.exclusive_account || profile.exclusive_account)
+                    && p.account_key().as_ref() == Some(&key)
+            }) {
+                return Err("同一平台和账号已有环境运行，请先关闭它".into());
+            }
+        }
         let settings = read_settings(root)?;
         let executable = resolve_executable(&settings.executable)
             .ok_or("未找到 Camoufox，请在内核设置中选择已下载的应用")?;
+        #[cfg(target_os = "macos")]
+        if executable.starts_with(root.join("kernels")) {
+            let app = executable
+                .ancestors()
+                .find(|p| p.extension().is_some_and(|x| x == "app"))
+                .ok_or("无效的内核应用")?;
+            let status = Command::new("/usr/sbin/spctl")
+                .args(["--assess", "--type", "execute"])
+                .arg(app)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err("macOS 未批准此下载内核，未启动。请选择系统信任的版本。".into());
+            }
+        }
         let version = version(&executable)
             .ok_or("无法读取 Camoufox 的 application.ini，请选择完整的内核应用")?;
         let major: u32 = version
@@ -377,7 +430,12 @@ impl BrowserManager {
             .next()
             .and_then(|v| v.parse().ok())
             .ok_or("浏览器版本无效")?;
-        let mut config = launch_config(profile, major, addon_paths(&settings)?)?;
+        let mut addons = crate::extensions::paths_for(root, &profile.id)?;
+        if let Some(addon) = crate::bookmarks::addon(root)? {
+            addons.push(addon)
+        }
+        let dir = profile_directory(root, id)?;
+        let mut config = launch_config(profile, major, addons)?;
         if headless {
             config["debug"] = json!(true);
         }
@@ -389,7 +447,6 @@ impl BrowserManager {
         ));
         prefs["intl.locale.requested"] = json!(profile.language);
         prefs["browser.shell.checkDefaultBrowser"] = json!(false);
-        let dir = profile_directory(root, id)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -412,11 +469,12 @@ impl BrowserManager {
             include_str!("start.html").replace("__PROFILE_JSON__", &metadata),
         )
         .map_err(|e| e.to_string())?;
-        let url = match start_url {
-            Some(url) => url.to_owned(),
-            None => tauri::Url::from_file_path(&page)
+        let urls = match start_url {
+            Some(url) => vec![url.to_owned()],
+            None if !profile.start_urls.is_empty() => profile.start_urls.clone(),
+            None => vec![tauri::Url::from_file_path(&page)
                 .map_err(|_| "启动页路径无效")?
-                .to_string(),
+                .to_string()],
         };
         let log_path = dir.join("browser.log");
         let log = OpenOptions::new()
@@ -425,7 +483,18 @@ impl BrowserManager {
             .write(true)
             .open(&log_path)
             .map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        let helper = if !headless && root.join("numbered-dock").is_file() {
+            Some(dock_helper(root)?)
+        } else {
+            None
+        };
         let mut command = Command::new(&executable);
+        #[cfg(target_os = "macos")]
+        if helper.is_some() {
+            command.env("MOZ_APP_NO_DOCK", "1");
+        }
+
         command
             .args(["-no-remote", "-new-instance", "-profile"])
             .arg(&dir);
@@ -440,9 +509,10 @@ impl BrowserManager {
             }
         }
         command
+            .env("STARPERSONA_BOOKMARK_SOCKET", root.join("control.sock"))
             .env("CAMOU_CONFIG_1", config.to_string())
             .env("CAMOU_PREFS_1", prefs.to_string())
-            .arg(url)
+            .args(urls)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
             .stderr(Stdio::from(log));
@@ -450,9 +520,30 @@ impl BrowserManager {
             .spawn()
             .map_err(|e| format!("无法启动 Camoufox：{e}"))?;
         self.errors.remove(id);
+        #[cfg(target_os = "macos")]
+        let tile = helper.and_then(|h| {
+            match Command::new(h)
+                .arg(child.id().to_string())
+                .arg(profile.serial.to_string())
+                .arg(&executable)
+                .stdin(Stdio::null())
+                .spawn()
+            {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    self.errors.insert(
+                        id.to_string(),
+                        format!("Dock 图标未启动，浏览器仍在运行：{e}"),
+                    );
+                    None
+                }
+            }
+        });
         self.instances.insert(
             id.to_owned(),
             Instance {
+                #[cfg(target_os = "macos")]
+                tile,
                 child,
                 signature: signature(workspace, profile)?,
                 stopping: false,
@@ -498,6 +589,33 @@ impl BrowserManager {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn dock_helper(root: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let bits = include_bytes!(concat!(env!("OUT_DIR"), "/StarPersonaDock"));
+    let d = root.join("helpers");
+    fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    let path = d.join("StarPersonaDock");
+    if fs::read(&path).ok().as_deref() != Some(bits.as_slice()) {
+        let mut tmp = tempfile::NamedTempFile::new_in(d).map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut tmp, bits).map_err(|e| e.to_string())?;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        tmp.persist(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+#[tauri::command]
+pub fn numbered_dock(app: tauri::AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+    let path = app_root(&app)?.join("numbered-dock");
+    match enabled {
+        Some(true) => fs::write(&path, []).map_err(|e| e.to_string())?,
+        Some(false) if path.exists() => fs::remove_file(&path).map_err(|e| e.to_string())?,
+        _ => {}
+    }
+    Ok(cfg!(target_os = "macos") && path.is_file())
+}
 fn app_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
@@ -587,6 +705,22 @@ mod tests {
 
     fn profile() -> Profile {
         serde_json::from_value(json!({"id":"test-a","serial":1,"name":"测试","groupId":"","proxyId":"","os":"Windows","tags":[],"notes":"","createdAt":"2026-11-18T00:00:00Z","archived":false,"favorite":false,"language":"en-US","timezone":"America/New_York","resolution":"1920 × 1080","fingerprint":"test"})).unwrap()
+    }
+
+    #[test]
+    fn measurements_do_not_change_the_running_proxy_signature() {
+        let mut w = crate::tests::empty_workspace();
+        w.proxies.push(serde_json::from_value(json!({"id":"p","name":"local","protocol":"SOCKS5","host":"127.0.0.1","port":18001,"country":""})).unwrap());
+        let mut p = profile();
+        p.proxy_id = "p".into();
+        let before = signature(&w, &p).unwrap();
+        w.proxies[0].check = Some(
+            serde_json::from_value(json!({"at":"now","ok":true,"message":"","lastGoodMs":23}))
+                .unwrap(),
+        );
+        assert_eq!(before, signature(&w, &p).unwrap());
+        w.proxies[0].port += 1;
+        assert_ne!(before, signature(&w, &p).unwrap());
     }
 
     #[test]

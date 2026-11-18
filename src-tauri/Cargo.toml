@@ -1,6 +1,6 @@
 [package]
 name = "starpersona"
-version = "0.1.0"
+version = "0.2.0"
 description = "星相 · 独立的身份，有序的工作空间"
 authors = ["StarPersona"]
 edition = "2021"
@@ -21,9 +21,12 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+tempfile = "3"
+sha2 = "0.10"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
 
 [dev-dependencies]
-tempfile = "3"

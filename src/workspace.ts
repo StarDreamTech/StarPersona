@@ -1,6 +1,11 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { ref } from "vue";
-import { initialWorkspace, parseWorkspace, type Workspace } from "./model";
+import {
+  initialWorkspace,
+  parseWorkspace,
+  stripDemoData,
+  type Workspace,
+} from "./model";
 
 const key = "starpersona.workspace.v1";
 export const workspace = ref<Workspace>(initialWorkspace());
@@ -20,12 +25,22 @@ export async function loadWorkspace() {
     const saved = desktop
       ? await invoke<Workspace | null>("read_workspace")
       : localStorage.getItem(key);
-    if (saved)
+    storageError.value = "";
+    if (saved) {
       workspace.value = parseWorkspace(
         typeof saved === "string" ? saved : JSON.stringify(saved),
       );
-    else await persist(workspace.value);
-    storageError.value = "";
+      const previous = JSON.parse(
+        JSON.stringify(workspace.value),
+      ) as Workspace;
+      if (stripDemoData(workspace.value)) {
+        try {
+          await persist(workspace.value, previous);
+        } catch (error) {
+          storageError.value = `示例数据清理未保存：${String(error)}`;
+        }
+      }
+    } else await persist(workspace.value);
     ready.value = true;
   } catch (error) {
     storageError.value = `工作空间读取失败：${String(error)}。请检查存储后重试，原数据不会被覆盖。`;

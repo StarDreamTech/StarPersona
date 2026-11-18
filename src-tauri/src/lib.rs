@@ -1,9 +1,16 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, path::Path, sync::Mutex};
+use std::{collections::HashSet, fs, path::Path, process::Command, sync::Mutex};
 use tauri::{Manager, State};
+mod bookmarks;
 mod browser;
+mod distribution;
+mod extensions;
+mod kernels;
+#[cfg(unix)]
+pub use bookmarks::native_host;
 #[cfg(unix)]
 mod control;
+mod proxy_tools;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +40,16 @@ struct Profile {
     timezone: String,
     resolution: String,
     fingerprint: String,
+    #[serde(default)]
+    platform: String,
+    #[serde(default)]
+    account_label: String,
+    #[serde(default)]
+    check_duplicate: bool,
+    #[serde(default)]
+    exclusive_account: bool,
+    #[serde(default)]
+    start_urls: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +60,19 @@ struct Group {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxyCheck {
+    at: String,
+    ok: bool,
+    message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_good_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bytes_per_second: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speed_at: Option<String>,
+}
+#[derive(Debug, Serialize, Deserialize)]
 struct Proxy {
     id: String,
     name: String,
@@ -50,6 +80,20 @@ struct Proxy {
     host: String,
     port: u16,
     country: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "sourceNode"
+    )]
+    source_node: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "sourceName"
+    )]
+    source_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    check: Option<ProxyCheck>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,6 +104,41 @@ struct Settings {
     default_timezone: String,
 }
 
+impl Profile {
+    fn account_key(&self) -> Option<(String, String)> {
+        let (p, a) = (self.platform.trim(), self.account_label.trim());
+        (!p.is_empty() && !a.is_empty()).then(|| (p.to_lowercase(), a.to_lowercase()))
+    }
+    fn validate_options(&self) -> Result<(), String> {
+        if [&self.platform, &self.account_label]
+            .iter()
+            .any(|x| x.encode_utf16().count() > 100 || x.chars().any(char::is_control))
+        {
+            return Err("平台或账号备注无效".into());
+        }
+        if (self.check_duplicate || self.exclusive_account) && self.account_key().is_none() {
+            return Err("启用账号限制需填写平台和账号备注".into());
+        }
+        if self.start_urls.len() > 8
+            || !self.start_urls.iter().all(|s| {
+                let lower = s.to_ascii_lowercase();
+                (lower.starts_with("http://") || lower.starts_with("https://"))
+                    && s.encode_utf16().count() <= 2048
+                    && !s
+                        .chars()
+                        .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+                    && tauri::Url::parse(s).is_ok_and(|u| {
+                        u.has_host() && u.username().is_empty() && u.password().is_none()
+                    })
+            })
+        {
+            return Err(
+                "启动网址最多 8 条，仅支持不含账号密码的 HTTP(S) 地址，每条不超过 2048 字".into(),
+            );
+        }
+        Ok(())
+    }
+}
 fn valid_text(value: &str, max: usize) -> bool {
     !value.trim().is_empty() && value.chars().count() <= max
 }
@@ -104,12 +183,33 @@ fn validate(w: &Workspace) -> Result<(), String> {
             || p.port == 0
             || !matches!(p.protocol.as_str(), "SOCKS5" | "HTTP")
             || p.country.chars().count() > 8
+            || p.source_node
+                .as_ref()
+                .is_some_and(|s| uuid::Uuid::parse_str(s).is_err())
+            || p.source_name.as_ref().is_some_and(|s| !valid_text(s, 80))
+            || p.check.as_ref().is_some_and(|c| {
+                !valid_text(&c.at, 40)
+                    || c.message.len() > 256
+                    || c.speed_at.as_ref().is_some_and(|s| !valid_text(s, 40))
+            })
         {
             return Err("代理配置无效".into());
         }
     }
     let mut serials = HashSet::new();
+    let mut accounts = std::collections::HashMap::new();
     for p in &w.profiles {
+        p.validate_options()?;
+        if !p.archived {
+            if let Some(key) = p.account_key() {
+                if accounts
+                    .insert(key, p.check_duplicate)
+                    .is_some_and(|old| old || p.check_duplicate)
+                {
+                    return Err("同一平台已存在相同账号备注".into());
+                }
+            }
+        }
         if !valid_text(&p.name, 80)
             || !valid_os(&p.os)
             || p.serial == 0
@@ -204,6 +304,23 @@ fn save_workspace(
     save_file(&path, &workspace)
 }
 
+#[tauri::command]
+fn open_github() -> Result<(), String> {
+    const URL: &str = "https://github.com/StarDreamTech/StarPersona";
+    let status = if cfg!(target_os = "macos") {
+        Command::new("open").arg(URL).status()
+    } else if cfg!(target_os = "windows") {
+        Command::new("cmd").args(["/C", "start", "", URL]).status()
+    } else {
+        Command::new("xdg-open").arg(URL).status()
+    };
+    match status {
+        Ok(code) if code.success() => Ok(()),
+        Ok(_) => Err("没能打开 GitHub".into()),
+        Err(error) => Err(format!("没能打开 GitHub：{error}")),
+    }
+}
+
 pub fn run() {
     use tauri::Emitter;
     tauri::Builder::default()
@@ -253,12 +370,27 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            proxy_tools::starport_list,
+            proxy_tools::proxy_measure,
+            distribution::brew_upgrade,
+            browser::numbered_dock,
+            kernels::kernel_list,
+            kernels::kernel_install,
+            bookmarks::bookmark_action,
             read_workspace,
             save_workspace,
             browser::browser_status,
             browser::save_browser_settings,
             browser::launch_browser,
-            browser::stop_browser
+            browser::stop_browser,
+            extensions::extension_list,
+            extensions::extension_import_path,
+            extensions::extension_import_url,
+            extensions::extension_set_scope,
+            extensions::extension_remove,
+            extensions::extension_update,
+            extensions::extension_store_search,
+            open_github
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

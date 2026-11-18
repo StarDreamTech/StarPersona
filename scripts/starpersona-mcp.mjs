@@ -12,6 +12,7 @@ const fields = {
   timezone: z.enum(['Asia/Shanghai', 'America/Los_Angeles', 'America/New_York', 'Asia/Tokyo', 'Asia/Singapore', 'Europe/London', 'UTC']).optional(),
   resolution: z.enum(['1920 × 1080', '1440 × 900', '2560 × 1440', '1366 × 768']).optional(),
   groupId: z.string().max(100).optional(), proxyId: z.string().max(100).optional(),
+  platform: z.string().max(100).optional(), accountLabel: z.string().max(100).optional(), checkDuplicate: z.boolean().optional(), exclusiveAccount: z.boolean().optional(), startUrls: z.array(z.string().max(2048)).max(8).optional(),
   tags: z.array(z.string().max(30)).max(12).optional(), notes: z.string().max(1000).optional(), favorite: z.boolean().optional(),
 };
 const profileId = z.string().min(1).max(100).describe('先查询环境列表，再使用返回的准确 ID');
@@ -35,4 +36,8 @@ tool('starpersona_profile_update', '修改环境配置。运行中的启动参�
 tool('starpersona_profile_start', '用独立持久化目录启动本机 Camoufox。禁止同一环境重复启动。', 'profile.start', { profileId });
 tool('starpersona_profile_stop', '请求正常退出指定托管进程；不强杀。返回后用 status 确认进程退出。', 'profile.stop', { profileId });
 tool('starpersona_profile_archive', '归档或恢复环境配置，保留浏览器数据；运行中不可归档。', 'profile.archive', { profileId, archived: z.boolean() }, false, true);
+tool('starpersona_extensions', '查询扩展中心。代码只存一份；scope 为 all、profiles 或 off。不可用项不会被加载。', 'extension.list', {}, true);
+tool('starpersona_extension_import', '从本机目录或 xpi/zip 导入一份 Firefox 扩展，默认不加载。相同扩展 ID 不会重复导入。', 'extension.import', { path: z.string().min(1) });
+tool('starpersona_extension_scope', '设置扩展加载范围。all 为所有窗口，profiles 需带 profileIds，off 为不加载。已打开的窗口要重新打开才生效。', 'extension.scope', { id: z.string().min(1), scope: z.enum(['all', 'profiles', 'off']), profileIds: z.array(z.string()).optional() });
+tool('starpersona_extension_remove', '从扩展中心移除扩展。只删除星相复制的代码，不删除各窗口里的插件数据，也不删除用户原来的目录。', 'extension.remove', { id: z.string().min(1) }, false, true);
 await server.connect(new StdioServerTransport());

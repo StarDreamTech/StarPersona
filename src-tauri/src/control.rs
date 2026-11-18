@@ -38,7 +38,8 @@ fn apply_patch(profile: &mut Profile, params: &Value) -> Result<(), String> {
         match key.as_str() {
             "profileId" => {}
             "name" | "os" | "language" | "timezone" | "resolution" | "proxyId" | "groupId"
-            | "tags" | "notes" | "favorite" => {
+            | "tags" | "notes" | "favorite" | "platform" | "accountLabel" | "checkDuplicate"
+            | "exclusiveAccount" | "startUrls" => {
                 value[key] = val.clone();
             }
             _ => return Err(format!("不支持的环境字段：{key}")),
@@ -61,6 +62,9 @@ fn dispatch(
             false,
         ));
     }
+    if request.method == "bookmark.sync" {
+        return Ok((crate::bookmarks::apply(root, "sync", params)?, false));
+    }
     let path = root.join("workspace.json");
     let mut workspace: Workspace = read_file(&path)?.ok_or("请先在星相中初始化工作空间")?;
     match request.method.as_str() {
@@ -81,6 +85,8 @@ fn dispatch(
                     (archived || !p.archived)
                         && (query.is_empty()
                             || p.name.to_lowercase().contains(&query)
+                            || p.platform.to_lowercase().contains(&query)
+                            || p.account_label.to_lowercase().contains(&query)
                             || p.id == query)
                 })
                 .collect::<Vec<_>>();
@@ -121,6 +127,11 @@ fn dispatch(
                 created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 group_id: String::new(),
                 proxy_id: String::new(),
+                platform: String::new(),
+                account_label: String::new(),
+                check_duplicate: false,
+                exclusive_account: false,
+                start_urls: vec![],
                 tags: vec![],
                 notes: String::new(),
                 archived: false,
@@ -153,6 +164,53 @@ fn dispatch(
             save_file(&path, &workspace)?;
             Ok((result, true))
         }
+        "extension.list" => Ok((
+            serde_json::to_value(crate::extensions::list(root)?).map_err(|e| e.to_string())?,
+            false,
+        )),
+        "extension.import" => {
+            let path = argument(&params, "path")?;
+            Ok((
+                serde_json::to_value(crate::extensions::import_path(root, path)?)
+                    .map_err(|e| e.to_string())?,
+                false,
+            ))
+        }
+        "extension.importUrl" => {
+            let url = argument(&params, "url")?;
+            Ok((
+                serde_json::to_value(crate::extensions::import_url(root, url)?)
+                    .map_err(|e| e.to_string())?,
+                false,
+            ))
+        }
+        "extension.scope" => {
+            let id = argument(&params, "id")?;
+            let scope = argument(&params, "scope")?;
+            let profile_ids = params
+                .get("profileIds")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Ok((
+                serde_json::to_value(crate::extensions::set_scope(root, id, scope, &profile_ids)?)
+                    .map_err(|e| e.to_string())?,
+                false,
+            ))
+        }
+        "extension.remove" => {
+            let id = argument(&params, "id")?;
+            Ok((
+                serde_json::to_value(crate::extensions::remove(root, id)?)
+                    .map_err(|e| e.to_string())?,
+                false,
+            ))
+        }
         _ => Err(format!("不支持的管理操作：{}", request.method)),
     }
 }
@@ -174,6 +232,7 @@ fn respond(app: &tauri::AppHandle, root: &Path, stream: &mut UnixStream) -> Resu
         }
         let request: Request =
             serde_json::from_str(&line).map_err(|e| format!("请求格式错误：{e}"))?;
+        let method = request.method.clone();
         let lock = app.state::<Mutex<()>>();
         let _guard = lock.lock().map_err(|e| e.to_string())?;
         let browsers = app.state::<Mutex<BrowserManager>>();
@@ -181,6 +240,9 @@ fn respond(app: &tauri::AppHandle, root: &Path, stream: &mut UnixStream) -> Resu
         let (value, changed) = dispatch(root, &mut manager, request)?;
         if changed {
             let _ = app.emit("workspace-changed", ());
+        }
+        if method.starts_with("extension.") && method != "extension.list" {
+            let _ = app.emit("extensions-changed", ());
         }
         Ok(value)
     })();
