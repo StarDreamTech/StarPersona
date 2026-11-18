@@ -1,12 +1,131 @@
-# StarPersona
+# 星相 StarPersona
 
-星相 StarPersona：开源指纹浏览器 / 多账号环境管理器（Windows · macOS · Linux）
+<img src="public/icon.svg" width="64" height="64" alt="星相图标">
 
-## 产品计划
+**简体中文** · [English](README.en.md)
 
-星相将基于 [Camoufox](https://github.com/daijro/camoufox) 做多环境管理界面。Camoufox 提供浏览器能力；星相补环境 / profile 管理入口。目标平台为 Windows、macOS 和 Linux。
+星相是基于 [Camoufox](https://github.com/daijro/camoufox) 的开源桌面浏览器环境管理器。每个环境使用独立的数据目录。当前已验证 Apple Silicon macOS，Windows 和 Linux 尚未验收。
 
-以上为计划，管理界面尚未实现，也尚未在三个目标平台验收。
+## 在 Mac 上打开
+
+如果项目已经打包，在项目根目录运行：
+
+```sh
+open src-tauri/target/release/bundle/macos/StarPersona.app
+```
+
+如果刚克隆仓库，`.app` 需要先构建；也可以按下方开发步骤直接启动桌面版。第一次使用时，新建一个**本地直连**环境，点「打开」。如果界面没有找到浏览器，点「配置内核」选择 `Camoufox.app`。
+
+## 当前版本
+
+基于 **Tauri 2 + Rust + Vue 3 + TypeScript** 的本地桌面管理界面。参考多账号浏览器的布局，提供星相品牌、浅蓝侧栏、环境表格和配置抽屉。
+
+- 浏览器环境创建、编辑、复制、收藏、搜索和排序。
+- 列表 / 卡片视图、分组筛选、分页、批量移动和归档恢复。
+- 分组和无认证 SOCKS5 / HTTP 代理配置管理。
+- 操作系统、语言、时区、分辨率与独立指纹标识配置。
+- Rust 校验并保存本地 JSON，写入失败保留原有工作空间。
+- 原生文件对话框导入 / 导出备份；导入前校验，替换前确认。
+- 工作台、系统设置、帮助、键盘快捷键和窄屏适配。
+- 复用本机 Camoufox，启动 / 关闭独立进程，自动刷新真实进程状态。
+- 每环境独立持久化 profile；应用基础操作系统标识、语言、时区、屏幕尺寸和代理。
+- 通过共享插件目录加载 Firefox 扩展，代码不复制到每个环境。
+
+**已接入本地 Camoufox 的基础启动能力。** 当前直接使用内核支持的配置参数，不需要额外的 Python 运行时。指纹标识仍只是配置 ID；尚未实现完整设备指纹生成、GeoIP 自动匹配和代理连通性检测。不要将基础接入视为完整反检测能力。
+
+初次运行会生成 8 个示例环境和 3 个示例代理。示例 IP 使用 RFC 5737 文档地址，启动时会拒绝使用；请把环境改为本地直连或填写真实代理。可编辑、移入回收站或用自己的工作空间备份替换。
+
+## 实测结论
+
+2026-11-18，Apple Silicon macOS，Camoufox `159.0-beta.42`。以下结论只覆盖表中列出的版本和样本。
+
+| 验收项 | 实测结果 |
+| --- | --- |
+| [环境与插件隔离](docs/browser-testing.md) | 四个环境同时运行，共用一份解压后的测试插件代码。Cookie、localStorage 和插件数据各自独立，重启后保留。 |
+| [设备指纹](docs/protocol-and-fingerprint-audit.md) | 系统标识、语言、时区和屏幕尺寸与配置一致；四个环境的 Canvas 均在重启后变化，三个 Windows / Linux 环境都报告 Apple GPU。**未通过稳定设备指纹验收。** |
+| [页面控制协议](docs/protocol-and-fingerprint-audit.md) | Camoufox 的 CDP 发现端点返回 404；WebDriver BiDi 能列页面、执行脚本。Chrome 157 对照能通过 Google DevTools MCP 列页。星相自己的 MCP 目前只管理环境。 |
+| [代理出口](docs/proxy-audit.md) | 40 个本机 SOCKS5 节点中，浏览器 HTTP 和 HTTPS 出口检查各成功 38 个；HTTPS 只观察到 23 个不同出口。节点数不能当作独立 IP 数。 |
+| [WebRTC、DNS 与断线](docs/proxy-audit.md) | 40 个代理环境均未采到 WebRTC 公网候选，直连对照能采到；断代理后测试请求失败，未观察到回退直连。仅确认目标域名交给 SOCKS5 代理，未验证完整 DNS 泄漏或 GeoIP。 |
+
+## 开发
+
+环境：Node.js 22.12+、npm、Rust 1.90.0，以及对应平台的 [Tauri 开发依赖](https://v2.tauri.app/start/prerequisites/)。仓库通过 `rust-toolchain.toml` 固定 Rust 版本。
+
+```sh
+npm install
+npm run tauri dev
+```
+
+仅预览前端：
+
+```sh
+npm run dev
+```
+
+前端地址为 `http://127.0.0.1:1420`。预览数据写入浏览器 localStorage，与桌面工作空间相互独立。
+
+## 连接本机 Camoufox
+
+macOS 自动检测 `/Applications/Camoufox.app` 和 `~/Applications/Camoufox.app`；也可以在「配置内核」中选择应用或填写 `camoufox` 可执行文件路径。要求保留完整应用目录及其中的 `application.ini`。
+
+1. 新建一个本地直连环境，或将已有环境的示例代理改为直连。
+2. 点击「打开」，浏览器会进入星相启动页，显示实际语言、时区、屏幕尺寸和数据保留标记。
+3. 关闭后再次打开，使用同一个 profile；浏览器自身退出后，列表状态会自动更新。
+4. 要退出星相，请先关闭其管理的浏览器实例。星相只向自己启动的进程请求正常关闭，不操作用户原有的 Camoufox 窗口。
+
+每个环境的数据保存在 `app_data_dir()/profiles/<环境 ID>/`，包含浏览器数据库、插件数据及 `browser.log`。运行中的环境不能修改启动参数、归档或从备份移除。复制环境只复制配置，重新创建数据目录，不复制登录状态。当前 JSON 备份不包含这些浏览器数据库。
+
+内核路径和共享插件目录保存在本机 `app_data_dir()/browser.json`，不随工作空间备份导出。共享插件须选择已解压目录，`manifest.json` 需包含固定的 `browser_specific_settings.gecko.id` 或旧版 `applications.gecko.id`。插件自身的云同步由其账号设置决定。
+
+## 验证和打包
+
+```sh
+npm test
+npm run test:control
+npm run build
+cargo test --release --manifest-path src-tauri/Cargo.toml
+npm run tauri build
+```
+
+真实内核集成测试（默认跳过；使用临时环境和本机 HTTP 服务）：
+
+```sh
+cargo test --release --manifest-path src-tauri/Cargo.toml real_camoufox -- --ignored --nocapture
+```
+
+若内核不在默认位置，运行测试前设置 `STARPERSONA_CAMOUFOX` 为应用或可执行文件路径。测试覆盖同时运行、实际基础参数、重复启动拦截、Cookie / localStorage / 共享插件数据的隔离与重启保留。
+
+macOS 只生成 `.app`：
+
+```sh
+npm run tauri build -- --bundles app
+```
+
+产物位于 `src-tauri/target/release/bundle/macos/StarPersona.app`。当前在 Apple Silicon macOS 上验证；Windows、Linux 的平台构建和实际运行仍需分别验收。发布版本尚未签名、公证。
+
+## 数据
+
+桌面数据文件为 Tauri 的 `app_data_dir()/workspace.json`。macOS 对应：
+
+```text
+~/Library/Application Support/app.starpersona.desktop/workspace.json
+```
+
+配置只保存在本机，不含账号密码。写入先同步临时文件，再替换原文件。数据损坏时显示错误并停止写入，避免用初始示例覆盖原配置。备份是完整工作空间；恢复会替换当前配置，请先导出备份。
+
+快捷键：`⌘/Ctrl + K` 搜索，非输入状态下 `N` 新建环境，`Esc` 关闭弹窗。
+
+## AI 管理：MCP / CLI / Skill
+
+已提供 7 个 MCP 管理工具、输出 JSON 的 CLI 和可复用 Skill。先打开桌面应用，再执行 `npm run cli -- status` 或 `npm run cli -- list`。MCP 配置见 `mcp-config.example.json`；Skill 位于 `skills/starpersona/SKILL.md`。当前本机控制入口支持 macOS / Linux，Windows 管道待实现；Linux 需在浏览器窗口中正常退出。
+
+这些入口与桌面界面共用 Rust 管理器，覆盖环境查询、创建、修改、启动、正常关闭与归档恢复。网页点击、填表等自动化尚未接入。Google Chrome DevTools MCP 基于 Chrome，不能直接控制当前 Camoufox。完整方案表、上游 issue 与接入步骤见 [AI 自动化说明](docs/automation.md)。
+
+## 后续能力
+
+基于 [Camoufox](https://github.com/daijro/camoufox) 继续补充完整设备指纹生成、GeoIP / WebRTC 与代理出口匹配、代理认证和连通性检测。当前代理启动支持无认证 SOCKS5 / HTTP，主机为域名或 IPv4。
+
+插件采用「共享代码 + 每环境独立数据」：目前所有环境使用内核设置中选定的同一组插件目录，插件设置与网站数据保存在各自的 profile。详见 [插件共享说明](docs/extensions.md)。逐环境插件选择、版本仓库和自动更新尚未实现。
 
 ## 许可证
 
