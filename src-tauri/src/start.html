@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>星相 · 环境已就绪</title>
+<style>*{box-sizing:border-box}body{margin:0;background:#f5f7fc;color:#243657;font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:850px;margin:9vh auto;padding:32px}header{display:flex;align-items:center;gap:13px;color:#526ee9;font-size:17px}header b{padding:11px 14px;background:#e9edff;border-radius:14px}h1{font-size:30px;font-weight:600;margin:34px 0 12px}p{color:#7c89a4;line-height:1.8}.panel{margin:26px 0;background:white;border:1px solid #e4e9f5;border-radius:18px;padding:8px 24px}.row{display:flex;gap:20px;justify-content:space-between;padding:17px 0;border-bottom:1px solid #eff2f8}.row:last-child{border:0}.row span{color:#8995ad;flex-shrink:0}.row strong{font-size:14px;font-weight:500;word-break:break-all;text-align:right}.links{display:flex;gap:12px;margin:25px 0}a{color:#526ee9;text-decoration:none;background:#e9edff;padding:12px 20px;border-radius:10px}small{color:#98a3b7;line-height:1.8}</style>
+<main><header><b>✧</b>星相 StarPersona</header><h1 id="name"></h1><p>环境已就绪。网站登录与插件数据保存在这个环境自己的目录中。</p><div class="panel" id="details"></div><div class="links"><a href="https://example.com">打开测试网页 ↗</a><a href="about:addons">管理浏览器插件 ↗</a></div><small>此页展示浏览器实际返回的值。当前已接入基础参数；Canvas、WebGL 等完整设备指纹尚未完成一致性验证。插件自身的云同步仍受其账号设置影响。</small></main>
+<script>
+const profile=__PROFILE_JSON__;
+document.title=profile.name+' · 星相';document.querySelector('#name').textContent=profile.name;
+let token;try{token=localStorage.getItem('starpersona.storage-check');if(!token){token=crypto.randomUUID();localStorage.setItem('starpersona.storage-check',token)}}catch{token='存储不可用'}
+const values=[['环境',profile.id],['操作系统标识',navigator.platform],['浏览器语言',navigator.language],['时区',Intl.DateTimeFormat().resolvedOptions().timeZone],['屏幕尺寸',screen.width+' × '+screen.height],['数据保留标记',token],['User-Agent',navigator.userAgent]];
+for(const [label,value]of values){const row=document.createElement('div');row.className='row';const name=document.createElement('span');name.textContent=label;const text=document.createElement('strong');text.textContent=value;row.append(name,text);document.querySelector('#details').append(row)}
+</script></html>

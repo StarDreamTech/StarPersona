@@ -1,0 +1,47 @@
+<!doctype html><meta charset="utf-8"><title>StarPersona proxy QA</title>
+<pre id="result">Collecting proxy evidence…</pre>
+<script>
+(async () => {
+  const label = '__LABEL__';
+  const hash = async text => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), n => n.toString(16).padStart(2,'0')).join('');
+  const request = async scheme => {
+    const start = performance.now();
+    try {
+      const response = await fetch(scheme + '://api.ipify.org?format=json&qa=' + crypto.randomUUID(), {cache:'no-store',signal:AbortSignal.timeout(10000)});
+      if (!response.ok) return {status:response.status,elapsedMs:Math.round(performance.now()-start)};
+      const {ip} = await response.json();
+      if (typeof ip !== 'string' || !/^[0-9a-f.:]+$/i.test(ip)) throw Error('Invalid IP response');
+      return {status:response.status,ip,elapsedMs:Math.round(performance.now()-start)};
+    } catch (error) { return {error:error.name,elapsedMs:Math.round(performance.now()-start)}; }
+  };
+  const rtc = async () => {
+    const result = {available:!!window.RTCPeerConnection,candidates:[]};
+    if (!result.available) return result;
+    const pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
+    try {
+      await new Promise(resolve => {
+        const timer = setTimeout(resolve,6000);
+        pc.onicecandidate = event => {
+          if (event.candidate) result.candidates.push(event.candidate.candidate);
+          else {clearTimeout(timer);resolve();}
+        };
+        (async () => {try {pc.createDataChannel('proxy-qa');await pc.setLocalDescription(await pc.createOffer());}
+          catch (error) {result.error=error.name;clearTimeout(timer);resolve();}})();
+      });
+    } finally {pc.close();}
+    return result;
+  };
+  const [http,https,webrtc] = await Promise.all([request('http'),request('https'),rtc()]);
+  const candidates = [];
+  for (const line of webrtc.candidates) {
+    if (!line || !line.startsWith('candidate:')) continue;
+    const fields=line.split(' '), address=fields[4]||'';
+    if (!address || fields.indexOf('typ') < 0) continue;
+    const privateIp=/^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(address)||/^(fc|fd|fe80:)/i.test(address)&&address.includes(':');
+    candidates.push({type:fields[fields.indexOf('typ')+1],protocol:fields[2],addressKind:address.endsWith('.local')?'mdns':privateIp?'private':address.includes(':')?'public-ipv6':'public-ipv4',addressHash:await hash(address),matchesHttpsIp:https.ip?address===https.ip:null});
+  }
+  const evidence={label,ua:navigator.userAgent,webdriver:navigator.webdriver,http:{...http,ip:undefined,ipHash:http.ip?await hash(http.ip):null},https:{...https,ip:undefined,ipHash:https.ip?await hash(https.ip):null},webrtc:{...webrtc,candidates}};
+  await fetch('/report/'+label,{method:'POST',body:JSON.stringify(evidence)});
+  document.querySelector('#result').textContent=JSON.stringify(evidence,null,2);
+})().catch(async error=>fetch('/report/__LABEL__',{method:'POST',body:JSON.stringify({label:'__LABEL__',error:error.name})}));
+</script>

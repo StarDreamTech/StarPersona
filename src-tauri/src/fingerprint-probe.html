@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>StarPersona fingerprint audit</title>
+<body><pre id="result">Collecting fingerprint evidence…</pre>
+<script>
+(async () => {
+  const digest = async data => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', typeof data === 'string' ? new TextEncoder().encode(data) : data)), x => x.toString(16).padStart(2, '0')).join('');
+  const checked = async task => { try { return await task(); } catch (error) { return { error: String(error) }; } };
+  const basic = w => ({
+    userAgent: w.navigator.userAgent, appVersion: w.navigator.appVersion,
+    platform: w.navigator.platform, oscpu: w.navigator.oscpu ?? null,
+    language: w.navigator.language, languages: Array.from(w.navigator.languages),
+    timezone: new w.Intl.DateTimeFormat().resolvedOptions().timeZone,
+    winterOffset: new w.Date('2026-01-15T12:00:00Z').getTimezoneOffset(),
+    summerOffset: new w.Date('2026-07-15T12:00:00Z').getTimezoneOffset(),
+    webdriver: w.navigator.webdriver, hardwareConcurrency: w.navigator.hardwareConcurrency,
+    deviceMemory: w.navigator.deviceMemory ?? null, maxTouchPoints: w.navigator.maxTouchPoints,
+    vendor: w.navigator.vendor, productSub: w.navigator.productSub,
+    screen: { width: w.screen.width, height: w.screen.height, availWidth: w.screen.availWidth, availHeight: w.screen.availHeight, colorDepth: w.screen.colorDepth, pixelDepth: w.screen.pixelDepth },
+    window: { innerWidth: w.innerWidth, innerHeight: w.innerHeight, outerWidth: w.outerWidth, outerHeight: w.outerHeight, devicePixelRatio: w.devicePixelRatio },
+    touch: 'ontouchstart' in w, pointerFine: w.matchMedia('(pointer: fine)').matches,
+    hover: w.matchMedia('(hover: hover)').matches,
+    uaClientHints: w.navigator.userAgentData ?? null,
+    plugins: Array.from(w.navigator.plugins, p => p.name),
+    pdfViewerEnabled: w.navigator.pdfViewerEnabled ?? null,
+  });
+  const canvas = () => checked(async () => {
+    const draw = () => {
+      const c = document.createElement('canvas'); c.width = 320; c.height = 120;
+      const x = c.getContext('2d');
+      x.fillStyle = '#f90'; x.fillRect(10, 10, 125, 50);
+      x.font = '17px Arial'; x.fillStyle = '#069'; x.fillText('Cwm fjordbank glyphs vext quiz, café 日本語 😃', 2, 29);
+      x.globalCompositeOperation = 'multiply'; x.fillStyle = 'rgba(120,30,200,.7)';
+      x.beginPath(); x.arc(140, 60, 45, 0, Math.PI * 2); x.fill(); return c;
+    };
+    const a = draw();
+    return { dataUrl: await digest(a.toDataURL()), repeatedDataUrl: await digest(a.toDataURL()), pixels: await digest(a.getContext('2d').getImageData(0, 0, a.width, a.height).data), freshCanvas: await digest(draw().toDataURL()) };
+  });
+  const webgl = () => checked(async () => {
+    const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+    const gl = c.getContext('webgl'); if (!gl) return { available: false };
+    const debug = gl.getExtension('WEBGL_debug_renderer_info');
+    const shader = (type, source) => { const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw Error(gl.getShaderInfoLog(s)); return s; };
+    const p = gl.createProgram(); gl.attachShader(p, shader(gl.VERTEX_SHADER, 'attribute vec2 p; void main(){gl_Position=vec4(p,0.0,1.0);}'));
+    gl.attachShader(p, shader(gl.FRAGMENT_SHADER, 'precision mediump float;void main(){gl_FragColor=vec4(gl_FragCoord.x/64.0,gl_FragCoord.y/64.0,0.3,1.0);}'));
+    gl.linkProgram(p); gl.useProgram(p); const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,b); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,0,1]),gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(p,'p');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);gl.viewport(0,0,64,64);gl.drawArrays(gl.TRIANGLES,0,3);
+    const pixels = new Uint8Array(64*64*4);gl.readPixels(0,0,64,64,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+    const result = { available:true, vendor:gl.getParameter(gl.VENDOR),renderer:gl.getParameter(gl.RENDERER),unmaskedVendor:debug?gl.getParameter(debug.UNMASKED_VENDOR_WEBGL):null,unmaskedRenderer:debug?gl.getParameter(debug.UNMASKED_RENDERER_WEBGL):null,version:gl.getParameter(gl.VERSION),shadingLanguage:gl.getParameter(gl.SHADING_LANGUAGE_VERSION),maxTextureSize:gl.getParameter(gl.MAX_TEXTURE_SIZE),extensions:gl.getSupportedExtensions().sort(),pixels:await digest(pixels) };
+    gl.getExtension('WEBGL_lose_context')?.loseContext();return result;
+  });
+  const fonts = () => checked(async () => {
+    await document.fonts.ready;
+    const samples = 'mmmmmmmmmmlliWW@#日本語中文'; const base = ['monospace','serif','sans-serif'];
+    const names = ['Arial','Arial Unicode MS','Times New Roman','Courier New','Helvetica Neue','PingFang SC','Hiragino Sans','Menlo','SF Pro Display','Segoe UI','Calibri','Consolas','Microsoft YaHei','Yu Gothic','Ubuntu','DejaVu Sans','Liberation Sans','Noto Sans CJK SC'];
+    const span=document.createElement('span');span.textContent=samples;span.style.cssText='position:absolute;left:-10000px;font-size:72px;white-space:nowrap;font-style:normal;font-weight:normal';document.body.append(span);
+    const measure=family=>{span.style.fontFamily=family;const r=span.getBoundingClientRect();return [r.width,r.height];};
+    const defaults=base.map(measure); const metrics={};
+    for(const name of names) metrics[name]=base.map(b=>measure('"'+name+'",'+b));
+    span.remove();const detected=names.filter(n=>metrics[n].some((m,i)=>JSON.stringify(m)!==JSON.stringify(defaults[i])));
+    return {detected,metricsHash:await digest(JSON.stringify(metrics)),defaults};
+  });
+  const audio = () => checked(async () => {
+    const Context=window.OfflineAudioContext||window.webkitOfflineAudioContext;if(!Context)return {available:false};
+    const c=new Context(1,44100,44100);const oscillator=c.createOscillator();oscillator.type='triangle';oscillator.frequency.value=10000;
+    const compressor=c.createDynamicsCompressor();compressor.threshold.value=-50;compressor.knee.value=40;compressor.ratio.value=12;compressor.attack.value=0;compressor.release.value=.25;
+    oscillator.connect(compressor);compressor.connect(c.destination);oscillator.start();
+    const buffer=await Promise.race([c.startRendering(),new Promise((_,reject)=>setTimeout(()=>reject(Error('audio timeout')),5000))]);
+    const data=buffer.getChannelData(0).slice(4500,5000);return {available:true,hash:await digest(data),sum:Array.from(data).reduce((a,b)=>a+Math.abs(b),0),sampleRate:buffer.sampleRate};
+  });
+  const worker = () => checked(async () => {
+    const source=`postMessage({userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,languages:Array.from(navigator.languages),hardwareConcurrency:navigator.hardwareConcurrency,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone});`;
+    const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));const w=new Worker(url);
+    try{return await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('worker timeout')),4000);w.onmessage=e=>{clearTimeout(timer);resolve(e.data);};w.onerror=e=>{clearTimeout(timer);reject(Error(e.message));};});}
+    finally{w.terminate();URL.revokeObjectURL(url);}
+  });
+  const network = () => checked(async () => {
+    let publicIp=null,httpError=null;
+    try {const response=await fetch('https://api.ipify.org?format=json',{signal:AbortSignal.timeout(5000)});if(!response.ok)throw Error('HTTP '+response.status);publicIp=(await response.json()).ip;}catch(e){httpError=String(e);}
+    const candidates=[];let rtcError=null;
+    if(window.RTCPeerConnection){const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
+      try{await new Promise(async resolve=>{const timer=setTimeout(resolve,4000);pc.onicecandidate=event=>{if(event.candidate)candidates.push(event.candidate.toJSON());else{clearTimeout(timer);resolve();}};try{pc.createDataChannel('audit');await pc.setLocalDescription(await pc.createOffer());}catch(e){rtcError=String(e);clearTimeout(timer);resolve();}});}finally{pc.close();}
+    }
+    const parsed=[];
+    for(const c of candidates){if(!c.candidate)continue;const parts=c.candidate.split(' ');const address=parts[4]||'';const privateAddress=/^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|fc|fd|fe80:)/i.test(address);
+      parsed.push({type:parts[parts.indexOf('typ')+1]||null,protocol:parts[2]||null,addressKind:address.endsWith('.local')?'mdns':privateAddress?'private':address.includes(':')?'public-ipv6':'public-ipv4',addressHash:await digest(address),matchesHttpIp:publicIp?address===publicIp:null});}
+    return {httpIpHash:publicIp?await digest(publicIp):null,httpError,webRTC:!!window.RTCPeerConnection,rtcError,candidates:parsed};
+  });
+  const previous=localStorage.getItem('qa');const cookieBefore=document.cookie;const token=previous||crypto.randomUUID();localStorage.setItem('qa',token);document.cookie='qa='+token+'; Max-Age=86400; SameSite=Lax';
+  const main=basic(window);const frame=document.createElement('iframe');frame.src='about:blank';document.body.append(frame);const iframe=basic(frame.contentWindow);frame.remove();
+  const [canvasResult,webglResult,fontResult,audioResult,workerResult,networkResult]=await Promise.all([canvas(),webgl(),fonts(),audio(),worker(),network()]);
+  const result={previous,token,cookieBefore,cookie:document.cookie,platform:navigator.platform,lang:navigator.language,tz:Intl.DateTimeFormat().resolvedOptions().timeZone,width:screen.width,height:screen.height,ua:navigator.userAgent,fingerprint:{main,iframe,worker:workerResult,canvas:canvasResult,webgl:webglResult,fonts:fontResult,audio:audioResult,network:networkResult}};
+  await fetch('/report/page',{method:'POST',body:JSON.stringify(result)});document.querySelector('#result').textContent=JSON.stringify(result,null,2);
+})().catch(async error=>{await fetch('/report/page',{method:'POST',body:JSON.stringify({error:String(error)})});});
+</script>
