@@ -1,0 +1,15 @@
+cask "starpersona" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/StarDreamTech/StarPersona/releases/download/v#{version}/StarPersona-#{version}-macos-arm64.zip"
+  name "StarPersona"
+  name "星相"
+  desc "Local browser environment and bookmark manager"
+  homepage "https://github.com/StarDreamTech/StarPersona"
+
+  depends_on arch: :arm64
+  depends_on macos: ">= :big_sur"
+
+  app "StarPersona.app"
+end
