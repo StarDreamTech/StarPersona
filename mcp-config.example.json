@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "starpersona": {
+      "command": "node",
+      "args": ["/absolute/path/to/StarPersona/scripts/starpersona-mcp.mjs"]
+    }
+  }
+}
